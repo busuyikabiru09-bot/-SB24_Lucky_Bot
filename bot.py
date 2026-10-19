@@ -1,112 +1,126 @@
-import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+import os
+import json
+import urllib.request
+import urllib.parse
+import time
 
-# Enable logging to see errors in the console
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+# Retrieve token from Railway environment variables
+TOKEN = os.environ.get("BOT_TOKEN")
 
-# Replace 'YOUR_BOT_TOKEN_HERE' with the HTTP API token you received from BotFather
-TOKEN = "YOUR_BOT_TOKEN_HERE"
+if not TOKEN:
+    print("ERROR: BOT_TOKEN variable is not set in Railway!")
+    exit(1)
 
-
-# 1. Main /start command handler
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    keyboard = [
-        [
-            InlineKeyboardButton("⚽ Live Scores", callback_data="live_scores"),
-            InlineKeyboardButton("📅 Fixtures", callback_data="fixtures"),
-        ],
-        [
-            InlineKeyboardButton("📊 Standings", callback_data="standings"),
-            InlineKeyboardButton("🔔 Alerts", callback_data="alerts"),
-        ],
-        [
-            InlineKeyboardButton("❓ Help", callback_data="help")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    welcome_text = (
-        "⚽ *Welcome to SB24 Lucky Bot!*\n\n"
-        "Select an option below to get the latest football updates and statistics:"
-    )
-
-    await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=reply_markup)
+BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 
 
-# 2. Callback query handler for button clicks
-async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
+def make_request(method, data=None):
+    """Helper function to talk directly to Telegram API"""
+    url = f"{BASE_URL}/{method}"
+    try:
+        if data:
+            payload = json.dumps(data).encode('utf-8')
+            req = urllib.request.Request(
+                url, data=payload, headers={'Content-Type': 'application/json'}
+            )
+        else:
+            req = urllib.request.Request(url)
 
-    if query.data == "live_scores":
-        response = (
-            "🔴 *Live Matches*\n\n"
-            "• Man City 1 - 0 Arsenal (65')\n"
-            "• Real Madrid 2 - 1 Barcelona (80')\n\n"
-            "_Stats update automatically._"
-        )
-    elif query.data == "fixtures":
-        response = (
-            "📅 *Upcoming Fixtures*\n\n"
-            "• Liverpool vs Chelsea — 20:00 UTC\n"
-            "• Bayern vs Dortmund — Tomorrow, 17:30 UTC"
-        )
-    elif query.data == "standings":
-        response = (
-            "📊 *Premier League Top 3*\n\n"
-            "1. Man City - 45 pts\n"
-            "2. Arsenal - 42 pts\n"
-            "3. Liverpool - 40 pts"
-        )
-    elif query.data == "alerts":
-        response = "🔔 *Notifications*\n\nYou are currently subscribed to live match goal alerts!"
-    elif query.data == "help":
-        response = (
-            "❓ *Help & Support*\n\n"
-            "Use the buttons below to navigate match updates and football statistics."
-        )
+        with urllib.request.urlopen(req, timeout=35) as response:
+            return json.loads(response.read().decode())
+    except Exception as e:
+        print(f"API Request Error ({method}): {e}")
+        return None
 
-    # Back button to return to main menu
-    back_keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")]]
-    reply_markup = InlineKeyboardMarkup(back_keyboard)
 
-    if query.data == "main_menu":
-        keyboard = [
-            [
-                InlineKeyboardButton("⚽ Live Scores", callback_data="live_scores"),
-                InlineKeyboardButton("📅 Fixtures", callback_data="fixtures"),
-            ],
-            [
-                InlineKeyboardButton("📊 Standings", callback_data="standings"),
-                InlineKeyboardButton("🔔 Alerts", callback_data="alerts"),
-            ],
-            [
-                InlineKeyboardButton("❓ Help", callback_data="help")
+def get_updates(offset=None):
+    """Fetch unread messages from Telegram"""
+    method = f"getUpdates?timeout=30" + (f"&offset={offset}" if offset else "")
+    result = make_request(method)
+    return result.get("result", []) if result else []
+
+
+def send_menu(chat_id):
+    """Sends the main football menu with interactive buttons"""
+    data = {
+        "chat_id": chat_id,
+        "text": "⚽ *Welcome to SB24 Lucky Bot!*\n\nSelect an option below for live updates:",
+        "parse_mode": "Markdown",
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {"text": "⚽ Live Scores", "callback_data": "live_scores"},
+                    {"text": "📅 Fixtures", "callback_data": "fixtures"}
+                ],
+                [
+                    {"text": "📊 Standings", "callback_data": "standings"},
+                    {"text": "🔔 Goal Alerts", "callback_data": "alerts"}
+                ]
             ]
-        ]
-        await query.edit_message_text(
-            "⚽ *Welcome to SB24 Lucky Bot!*\n\nSelect an option below:",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    else:
-        await query.edit_message_text(response, parse_mode="Markdown", reply_markup=reply_markup)
+        }
+    }
+    make_request("sendMessage", data)
+
+
+def handle_callback(callback_query):
+    """Handles user button clicks"""
+    query_id = callback_query["id"]
+    chat_id = callback_query["message"]["chat"]["id"]
+    message_id = callback_query["message"]["message_id"]
+    data = callback_query["data"]
+
+    # Acknowledge the button press to remove the loading animation on Telegram
+    make_request("answerCallbackQuery", {"callback_query_id": query_id})
+
+    if data == "live_scores":
+        text = "🔴 *Live Matches*\n\n• Man City 1 - 0 Arsenal (65')\n• Real Madrid 2 - 1 Barcelona (80')\n\n_Updated live!_"
+    elif data == "fixtures":
+        text = "📅 *Upcoming Fixtures*\n\n• Liverpool vs Chelsea — 20:00 UTC\n• Bayern vs Dortmund — Tomorrow 17:30 UTC"
+    elif data == "standings":
+        text = "📊 *Premier League Top 3*\n\n1. Man City - 45 pts\n2. Arsenal - 42 pts\n3. Liverpool - 40 pts"
+    elif data == "alerts":
+        text = "🔔 *Goal Alerts*\n\nYou are now subscribed to live goal notifications!"
+    elif data == "main_menu":
+        send_menu(chat_id)
+        return
+
+    # Edit existing message with response and add a back button
+    update_data = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "reply_markup": {
+            "inline_keyboard": [
+                [{"text": "🔙 Back to Main Menu", "callback_data": "main_menu"}]
+            ]
+        }
+    }
+    make_request("editMessageText", update_data)
 
 
 def main():
-    # Build application
-    app = Application.builder().token(TOKEN).build()
+    print("Bot started successfully! Polling for updates...")
+    offset = None
 
-    # Register handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_click))
+    while True:
+        updates = get_updates(offset)
+        for update in updates:
+            offset = update["update_id"] + 1
 
-    # Start the bot
-    print("Bot is running...")
-    app.run_polling()
+            # Handle user typing commands (e.g. /start)
+            if "message" in update and "text" in update["message"]:
+                text = update["message"]["text"]
+                chat_id = update["message"]["chat"]["id"]
+
+                if text.startswith("/start"):
+                    send_menu(chat_id)
+
+            # Handle interactive button clicks
+            elif "callback_query" in update:
+                handle_callback(update["callback_query"])
+
+        time.sleep(1)
 
 
 if __name__ == "__main__":
